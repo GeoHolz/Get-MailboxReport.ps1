@@ -1,427 +1,510 @@
 <#
-  .SYNOPSIS
-  Purge Exchange 2013+ and IIS logfiles across Exchange servers 
-   
-  Thomas Stensitzki
-  (Based Based on the original script by Brian Reid, C7 Solutions (c)
-  http://www.c7solutions.com/2013/04/removing-old-exchange-2013-log-files-html)
-	
-  THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
-  RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
-	
-  Version 2.14, 2018-01-31
-  Ideas, comments and suggestions to support@granikos.eu 
- 
-  .LINK  
-  http://scripts.Granikos.eu
-	
-  .DESCRIPTION
-	
-  This script deletes all Exchange and IIS logs older than X days from all Exchange 2013+ servers
-  that are fetched using the Get-ExchangeServer cmdlet.
-  The Exchange log file location is read from the environment variable and used to build an 
-  adminstrative UNC path for file deletions.
-  It is assumed that the Exchange setup path is IDENTICAL across all Exchange servers.
-  The IIS log file location is read from the local IIS metabase of the LOCAL server
-  and is used to build an administrative UNC path for IIS log file deletions.
-  It is assumed that the IIS log file location is identical across all Exchange servers.
-  .NOTES 
-  Requirements 
-  - Windows Server 2008 R2 SP1, Windows Server 2012 or Windows Server 2012 R2  
-  - Utilizes the global function library found here: http://scripts.granikos.eu
-  - Exchange 2013+ Management Shell
-  Revision History 
-  -------------------------------------------------------------------------------- 
-  1.0     Initial community release 
-  1.1     Variable fix and optional code added 
-  1.2     Auto/Manual configration options added
-  1.3     Check if running in elevated mode added
-  1.4     Handling of IIS default location fixed
-  1.5     Sorting of server names added and Write-Host output changed
-  1.6     Count Error fixed
-  1.7		  Email report functionality added
-  1.8     Support for global logging and other functions added
-  1.9     Global functions updated (write to event log)
-  1.91    Write DaysToKeep to log
-  1.92    .Count issue fixed to run on Windows Server 2012
-  1.93    Minor chances to PowerShell hygiene
-  1.94    SendMail issue fixed (Thanks to denisvm, https://github.com/denisvm)
-  2.0     Script update
-  2.1     Log file archiving and archive compressions added
-  2.11    Issue #6 fixed 
-  2.13    Issue #7 fixed
-  2.14    Issue #9 fixed
-	
-  .PARAMETER DaysToKeep
-  Number of days Exchange and IIS log files should be retained, default is 30 days
-  .PARAMETER Auto
-  Switch to use automatic detection of the IIS and Exchange log folder paths
-  .PARAMETER IsEdge
-  Indicates the the script is executed on an Exchange Server holding the EDGE role. Without the switch servers holding the EDGE role are excluded
-  .PARAMETER RepositoryRootPath
-  Absolute path to a repository folder for storing copied log files and compressed archives. Preferably an UNC path. A new subfolder will be created fpr each Exchange server.
-  .PARAMETER ArchiveMode
-  Log file copy and archive mode. Possible values
-  None = All log files will be purged without being copied
-  CopyOnly = Simply copy log files to the RepositoryRootPath
-  CopyAndZip = Copy logfiles and send copied files to compressed archive
-  CopyZipAndDelete = Same as CopyAndZip, bt delete copied log files from RepositoryRootPath
-  .PARAMETER SendMail
-  Switch to send an Html report
-  .PARAMETER MailFrom
-  Email address of report sender
-  .PARAMETER MailTo
-  Email address of report recipient
-  .PARAMETER MailServer
-  SMTP Server for email report
-   
-  .EXAMPLE
-  Delete Exchange and IIS log files older than 14 days 
-  .\Purge-LogFiles -DaysToKeep 14
-  .EXAMPLE
-  Delete Exchange and IIS log files older than 7 days with automatic discovery
-  .\Purge-LogFiles -DaysToKeep 7 -Auto
-  .EXAMPLE
-  Delete Exchange and IIS log files older than 7 days with automatic discovery and send email report
-  .\Purge-LogFiles -DaysToKeep 7 -Auto -SendMail -MailFrom postmaster@sedna-inc.com -MailTo exchangeadmin@sedna-inc.com -MailServer mail.sedna-inc.com 
-  .EXAMPLE
-  Delete Exchange and IIS log files older than 14 days, but copy files to a central repository and compress the log files before final deletion
-  .\Purge-LogFiles -DaysToKeep 14 -RepositoryRootPath \\OTHERSERVER\OtherShare\LOGS -ArchiveMode CopyZipAndDelete
-  #>
-[CmdletBinding()]
-Param(
-  [int] $DaysToKeep = 30,  
-  [switch] $Auto,
-  [switch] $IsEdge,
-  [switch] $SendMail,
-  [string] $MailFrom = '',
-  [string] $MailTo = '',
-  [string] $MailServer = '',
-  [string] $RepositoryRootPath = '\\MYSERVER\SomeShare\EXCHANGELOGS',
-  [ValidateSet('None','CopyOnly','CopyAndZip','CopyZipAndDelete')] #Available archive modes, default: NONE
-  [string] $ArchiveMode = 'None'
+.SYNOPSIS
+Get-MailboxReport.ps1 - Mailbox report generation script.
+.DESCRIPTION 
+Generates a report of useful information for
+the specified server, database, mailbox or list of mailboxes.
+Use only one parameter at a time depending on the scope of
+your mailbox report.
+.OUTPUTS
+Single mailbox reports are output to the console, while all other reports are output to email.
+.PARAMETER All
+Generates a report for all mailboxes in the organization.
+.PARAMETER Server
+Generates a report for all mailboxes on the specified server.
+.PARAMETER Database
+Generates a report for all mailboxes on the specified database.
+.PARAMETER File
+Generates a report for mailbox names listed in the specified text file.
+.PARAMETER Mailbox
+Generates a report only for the specified mailbox.
+.PARAMETER SendEmail
+Specifies that an email report with the CSV file attached should be sent.
+.PARAMETER MailFrom
+The SMTP address to send the email from.
+.PARAMETER MailTo
+The SMTP address to send the email to.
+-MailServer The SMTP server to send the email through.
+.EXAMPLE
+.\Get-MailboxReport.ps1 -Database DB01
+Returns a report with the mailbox statistics for all mailbox users in
+database HO-MB-01
+.EXAMPLE
+.\Get-MailboxReport.ps1 -All -SendEmail -MailFrom exchangereports@domain.local -MailTo it@domain.local -MailServer smtp.domain.local
+Returns a report with the mailbox statistics for all mailbox users and
+sends an email report to the specified recipient.
+.NOTES
+Written by: Geo Holz
+Find me on:
+* My Blog:	https://blog.jolos.fr
+Original script by Paul Cunningham ( http://paulcunningham.me)
+License:
+The MIT License (MIT)
+Copyright (c) 2015 Paul Cunningham
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+Change Log:
+V1.00, 9/5/2018 : Original script
+#>
+
+#requires -version 2
+
+param(
+	[Parameter(ParameterSetName='database')]
+    [string]$Database,
+
+	[Parameter(ParameterSetName='file')]
+    [string]$File,
+
+	[Parameter(ParameterSetName='server')]
+    [string]$Server,
+
+	[Parameter(ParameterSetName='mailbox')]
+    [string]$Mailbox,
+
+	[Parameter(ParameterSetName='all')]
+    [switch]$All,
+
+    [Parameter( Mandatory=$false)]
+	[switch]$SendEmail,
+
+	[Parameter( Mandatory=$false)]
+	[string]$MailFrom,
+
+	[Parameter( Mandatory=$false)]
+	[string]$MailTo,
+
+	[Parameter( Mandatory=$false)]
+	[string]$MailServer,
+
+    [Parameter( Mandatory=$false)]
+    [int]$Top = 10
+
 )
 
-## Set fixed IIS and Exchange log paths 
-## Examples: 
-##   "C$\inetpub\logs\LogFiles"
-##   "C$\Program Files\Microsoft\Exchange Server\V15\Logging"
+#...................................
+# Variables
+#...................................
 
-## ADJUST AS NEEDED
-[string]$IisUncLogPath = 'D$\IISLogs'
-[string]$ExchangeUncLogPath = 'E$\Program Files\Microsoft\Exchange Server\V15\Logging'
+$now = Get-Date
 
-# log file extension filter
-[string[]]$IncludeFilter = @('*.log')
+$ErrorActionPreference = "SilentlyContinue"
+$WarningPreference = "SilentlyContinue"
 
-# filename template for archived log files
-[string]$ArchiveFileName =  "LogArchive $(Get-Date -Format 'yyyy-MM-dd HHmm').zip"
+$reportemailsubject = "Exchange Mailbox Size Report - $now"
+$myDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Folder name for a per Exchange server log files
-# Folder is used as target when copying log files
-# Folder will be deleted when using ArchiveMode CopyZipAndDelete
-[string]$LogSubfolderName = 'LOGS'
+$report = @()
 
-# Some error variables
-$ERR_OK = 0
-$ERR_COMPRESSIONFAILED = 1080
-$ERR_NONELEVATEDMODE = 1099
 
-# Preset some archive switches
-[bool]$CopyFiles = $false
-[bool]$ZipArchive = $false
-[bool]$DeleteZippedFiles = $false
+#...................................
+# Email Settings
+#...................................
 
-# Import Exchange functions
-Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+$smtpsettings = @{
+	To =  $MailTo
+	From = $MailFrom
+    Subject = $reportemailsubject
+	SmtpServer = $MailServer
+	}
 
-# 2015-06-18: Implementation of global functions module
-Import-Module -Name GlobalFunctions
-$ScriptDir = Split-Path -Path $script:MyInvocation.MyCommand.Path
-$ScriptName = $MyInvocation.MyCommand.Name
-$logger = New-Logger -ScriptRoot $ScriptDir -ScriptName $ScriptName -LogFileRetention 14
-$logger.Write('Script started')
-
-if($Auto) {
-    # detect log file locations automatically and set variables
-
-    [string]$ExchangeInstallPath = $env:ExchangeInstallPath
-    [string]$ExchangeUncLogDrive = $ExchangeInstallPath.Split(':\')[0]
-    $ExchangeUncLogPath = ('{0}$\{1}Logging\' -f ($ExchangeUncLogDrive), $ExchangeInstallPath.Remove(0,3))
-
-    # Fetch local IIS log location from Metabase
-    # IIS default location fixed 2015-02-02
-    [string]$IisLogPath = ((Get-WebConfigurationProperty 'system.applicationHost/sites/siteDefaults' -Name logFile).directory).Replace('%SystemDrive%',$env:SystemDrive)
-
-    # Extract drive letter and build log path
-    [string]$IisUncLogDrive =$IisLogPath.Split(':\')[0] 
-    $IisUncLogPath = $IisUncLogDrive + '$\' + $IisLogPath.Remove(0,3) 
-}
-
-function Copy-LogFiles {
-  [CmdletBinding()]
-  param(
-    [string] $SourceServer = '',
-    [string]$SourcePath = '',
-    $FilesToMove,
-    [string]$ArchivePrefix = ''
-  )
-
-  if($SourceServer -ne '') { 
-
-    # path per SERVER for zipped archives
-    $ServerRepositoryPath = Join-Path -Path $RepositoryRootPath -ChildPath $SourceServer
-
-    # subfolder used as target for copying source folders and files
-    $ServerRepositoryLogsPath = Join-Path -Path $ServerRepositoryPath -ChildPath $LogSubfolderName
-
-    $ServerRepositoryPath = Join-Path -Path $RepositoryRootPath -ChildPath $SourceServer
-
-    if(!(Test-Path -Path $ServerRepositoryPath)) {
-
-      # Create new target directory for server, if does not exist
-      $null = New-Item -Path $ServerRepositoryPath -ItemType Directory -Force -Confirm:$false
-
-    }
-
-    foreach ($File in $FilesToMove) {
-      # target directory
-      $targetDir = $File.DirectoryName.Replace($TargetServerFolder, $ServerRepositoryLogsPath)
-
-      # target file path
-      $targetFile = $File.FullName.Replace($TargetServerFolder, $ServerRepositoryLogsPath)
-      
-      # create target directory, if not exists
-      if(!(Test-Path -Path $targetDir)) {$null = mkdir -Path $targetDir}
-
-      # copy file to target
-      $null = Copy-Item -Path $File.FullName -Destination $targetFile -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
-
-    }    
-    
-    if($ZipArchive) {
-      # zip copied log files
-      
-      $Archive = Join-Path -Path $ServerRepositoryPath -ChildPath ('{0}-{1}' -f $ArchivePrefix, $ArchiveFileName)
-      $logger.Write(('Zip copied files to {0}' -f $ArchiveFileName))
-      
-      # delete archive file, if already exists
-      if(Test-Path -Path $Archive) {Remove-Item -Path $Archive -Force -Confirm:$false}
-
-      try {
-        # create zipped asrchive
-        Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
-        [IO.Compression.ZipFile]::CreateFromDirectory($ServerRepositoryLogsPath,$Archive)
-      }
-      catch {
-        $logger.Write(('Error compressing files from {0} to {1}' -f $ServerRepositoryLogsPath, $Archive),3)      
-      }
-      finally {
-
-        # cleanup, if compression was successful
-        if($DeleteZippedFiles) {
-
-          $logger.Write(('Deleting folder {0}' -f $ServerRepositoryLogsPath))
-          $null = Remove-Item -Path $ServerRepositoryLogsPath -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
-
-        }
-      }
-    } 
-  }  
-}
-
-# Function to clean log files from remote servers using UNC paths
-function Remove-LogFiles {
-  [CmdletBinding()]
-  Param(
-    [Parameter(Mandatory, HelpMessage='Absolute path to log file source')]
-    [string]$Path,
-    [ValidateSet('IIS','Exchange')] 
-    [string]$Type = 'IIS'
-  )
-
-  # Build full UNC path
-  $TargetServerFolder = ('\\{0}\{1}' -f ($E15Server), ($Path))
-
-  # Write progress bar for current activity
-  Write-Progress -Activity ('Checking Server {0}' -f $E15Server) -Status ('Checking files in {0}' -f $TargetServerFolder) -PercentComplete(($i/$max)*100)
-
-  # Only try to delete files, if folder exists
-  if (Test-Path -Path $TargetServerFolder) {
+Function Set-CellColor
+{   <#
+    .SYNOPSIS
+        Function that allows you to set individual cell colors in an HTML table
+    .DESCRIPTION
+        To be used inconjunction with ConvertTo-HTML this simple function allows you
+        to set particular colors for cells in an HTML table.  You provide the criteria
+        the script uses to make the determination if a cell should be a particular 
+        color (property -gt 5, property -like "*Apple*", etc).
         
-      $LastWrite = (Get-Date).AddDays(-$DaysToKeep)
-
-      # Select files to delete
-      $Files = Get-ChildItem -Path $TargetServerFolder -Include $IncludeFilter -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.LastWriteTime -le $LastWrite}
-      $FilesToDelete = ($Files | Measure-Object).Count
-
-      # Lets count the files that will be deleted
-      $fileCount = 0
-
-      if($FilesToDelete -gt 0) {
-
-        if($CopyFiles) {
-
-          # we want to copy all files to central repository before final deletion
-          $logger.Write(('Copy {0} files from {1} to repository' -f $FilesToDelete.Count, $TargetServerFolder))
-
-          # Write progress bar for current activity
-          Write-Progress -Activity ('Checking Server {0}' -f $E15Server) -Status 'Copying log files' -PercentComplete(($i/$max)*100)
-
-          Copy-LogFiles -SourceServer $E15Server -SourcePath $TargetServerFolder -FilesToMove $Files -ArchivePrefix $Type
-        }
+        You can add the function to your scripts, dot source it to load into your current
+        PowerShell session or add it to your $Profile so it is always available.
         
-        # Delete the files
-        foreach ($File in $Files) {
+        To dot source:
+            .".\Set-CellColor.ps1"
+            
+    .PARAMETER Property
+        Property, or column that you will be keying on.  
+    .PARAMETER Color
+        Name or 6-digit hex value of the color you want the cell to be
+    .PARAMETER InputObject
+        HTML you want the script to process.  This can be entered directly into the
+        parameter or piped to the function.
+    .PARAMETER Filter
+        Specifies a query to determine if a cell should have its color changed.  $true
+        results will make the color change while $false result will return nothing.
+        
+        Syntax
+        <Property Name> <Operator> <Value>
+        
+        <Property Name>::= the same as $Property.  This must match exactly
+        <Operator>::= "-eq" | "-le" | "-ge" | "-ne" | "-lt" | "-gt"| "-approx" | "-like" | "-notlike" 
+            <JoinOperator> ::= "-and" | "-or"
+            <NotOperator> ::= "-not"
+        
+        The script first attempts to convert the cell to a number, and if it fails it will
+        cast it as a string.  So 40 will be a number and you can use -lt, -gt, etc.  But 40%
+        would be cast as a string so you could only use -eq, -ne, -like, etc.  
+    .PARAMETER Row
+        Instructs the script to change the entire row to the specified color instead of the individual cell.
+    .INPUTS
+        HTML with table
+    .OUTPUTS
+        HTML
+    .EXAMPLE
+        get-process | convertto-html | set-cellcolor -Propety cpu -Color red -Filter "cpu -gt 1000" | out-file c:\test\get-process.html
+        Assuming Set-CellColor has been dot sourced, run Get-Process and convert to HTML.  
+        Then change the CPU cell to red only if the CPU field is greater than 1000.
+        
+    .EXAMPLE
+        get-process | convertto-html | set-cellcolor cpu red -filter "cpu -gt 1000 -and cpu -lt 2000" | out-file c:\test\get-process.html
+        
+        Same as Example 1, but now we will only turn a cell red if CPU is greater than 100 
+        but less than 2000.
+        
+    .EXAMPLE
+        $HTML = $Data | sort server | ConvertTo-html -head $header | Set-CellColor cookedvalue red -Filter "cookedvalue -gt 1"
+        PS C:\> $HTML = $HTML | Set-CellColor Server green -Filter "server -eq 'dc2'"
+        PS C:\> $HTML | Set-CellColor Path Yellow -Filter "Path -like ""*memory*""" | Out-File c:\Test\colortest.html
+        
+        Takes a collection of objects in $Data, sorts on the property Server and converts to HTML.  From there 
+        we set the "CookedValue" property to red if it's greater then 1.  We then send the HTML through Set-CellColor
+        again, this time setting the Server cell to green if it's "dc2".  One more time through Set-CellColor
+        turns the Path cell to Yellow if it contains the word "memory" in it.
+        
+    .EXAMPLE
+        $HTML = $Data | sort server | ConvertTo-html -head $header | Set-CellColor cookedvalue red -Filter "cookedvalue -gt 1" -Row
+        
+        Now, if the cookedvalue property is greater than 1 the function will highlight the entire row red.
+        
+    .NOTES
+        Author:             Martin Pugh
+        Twitter:            @thesurlyadm1n
+        Spiceworks:         Martin9700
+        Blog:               www.thesurlyadmin.com
           
-          $null = Remove-Item -Path $File -ErrorAction SilentlyContinue -Force
-          
-          $fileCount++
-        }
-        
+        Changelog:
+            1.5             Added ability to set row color with -Row switch instead of the individual cell
+            1.03            Added error message in case the $Property field cannot be found in the table header
+            1.02            Added some additional text to help.  Added some error trapping around $Filter
+                            creation.
+            1.01            Added verbose output
+            1.0             Initial Release
+    .LINK
+        http://community.spiceworks.com/scripts/show/2450-change-cell-color-in-html-table-with-powershell-set-cellcolor
+    #>
 
-        $logger.Write(('{0} files deleted in {1}' -f $fileCount, $TargetServerFolder))
-
-        #Html output
-        $Output = ("<li>{0} files deleted in '{1}'</li>" -f $fileCount, $TargetServerFolder)
-      }
-      else {
-        $logger.Write(('No files to delete in {0}' -f $TargetServerFolder))
-
-        #Html output
-        $Output = ("<li>No files to delete in '{0}'</li>" -f $TargetServerFolder)
-      }
-  }
-  Else {
-      # oops, folder does not exist or is not accessible
-      Write-Host ("The folder {0} doesn't exist or is not accessible! Check the folder path!" -f $TargetServerFolder) -ForegroundColor Red
-
-      #Html output
-      $Output = ("The folder {0} doesn't exist or is not accessible! Check the folder path!" -f $TargetServerFolder)
-  }
-
-  $Output
-}
-
-# Check if we are running in elevated mode
-# function (c) by Michel de Rooij, michel@eightwone.com
-Function Get-IsAdmin {
-    $currentPrincipal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList ( [Security.Principal.WindowsIdentity]::GetCurrent() )
-
-    If( $currentPrincipal.IsInRole( [Security.Principal.WindowsBuiltInRole]::Administrator )) {
-        return $true
-    }
-    else {
-        return $false
-    }
-}
-
-# Check validity of parameters required for sending emails 
-Function Check-SendMail {
-     if( ($MailFrom -ne '') -and ($MailTo -ne '') -and ($MailServer -ne '') ) {
-        return $true
-     }
-     else {
-        return $false
-     }
-}
-
-# Main -----------------------------------------------------
-
-If ($SendMail.IsPresent) { 
-  If (-Not (Check-SendMail)) {
-      Throw 'If -SendMail specified, -MailFrom, -MailTo and -MailServer must be specified as well!'
-  }
-}
-
-Switch($ArchiveMode) {
-  'CopyOnly' {
-    $CopyFiles = $true
-  }
-  'CopyAndZip' {
-    $CopyFiles = $true
-    $ZipArchive = $true
-  }
-  'CopyZipAndDelete' {
-    $CopyFiles = $true
-    $ZipArchive = $true
-    $DeleteZippedFiles = $true
-  }
-  default { }
-}
-
-If (Get-IsAdmin) {
-    # We are running in elevated mode. Let's continue.
-
-    Write-Output ('Removing IIS and Exchange logs - Keeping last {0} days - Be patient, it might take some time' -f $DaysToKeep)
-
-    # Track script execution in Exchange Admin Audit Log 
-    Write-AdminAuditLog -Comment 'Purge-LogFiles started!'
-    $logger.Write(('Purge-LogFiles started, keeping last {0} days of log files.' -f ($DaysToKeep)))
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory,Position=0)]
+        [string]$Property,
+        [Parameter(Mandatory,Position=1)]
+        [string]$Color,
+        [Parameter(Mandatory,ValueFromPipeline)]
+        [Object[]]$InputObject,
+        [Parameter(Mandatory)]
+        [string]$Filter,
+        [switch]$Row
+    )
     
-    $AllExchangeServers = $null
-
-    if($IsEdge) { 
-      # Get a list of all Exchange V15* servers
-      $AllExchangeServers = Get-ExchangeServer | Where-Object {$_.IsE15OrLater -eq $true} | Sort-Object -Property Name
-    }
-    else {
-      # Get a list of all Exchange V15* servers, exclude server service the EDGE role
-      $AllExchangeServers = Get-ExchangeServer | Where-Object {($_.IsE15OrLater -eq $true) -and ($_.ServerRole -notmatch 'Edge')} | Sort-Object -Property Name
-    }
-
-    $logger.WriteEventLog(('Script started. Script will purge log files on: {0}' -f $AllExchangeServers))
-
-    # Lets count the steps for a nice progress bar
-    $i = 1
-    $max = $AllExchangeServers.Count * 2 # two actions to execute per server
-
-    # Prepare Output
-    $Output = '<html>
-    <body>
-    <font size=""1"" face=""Arial,sans-serif"">'
-
-    # Call function for each server and each directory type
-    foreach ($E15Server In $AllExchangeServers) {
-        # Write-Host "Working on: $E15Server" -ForegroundColor Gray
-
-        $Output += ('<h5>{0}</h5>
-        <ul>' -f $E15Server)
-
-        # Remove IIS log files
-        $Output += Remove-LogFiles -Path $IisUncLogPath -Type IIS
-        $i++
-
-        # Remove Exchange files
-        $Output += Remove-LogFiles -Path $ExchangeUncLogPath -Type Exchange
-        $i++
-
-        $Output+='</ul>'
-
-    }
-
-    # Finalize Output
-    $Output+='</font>
-    </body>
-    </html>'
-
-    if($SendMail) {
-        $logger.Write(('Sending email to {0}' -f $MailTo))
-        try {
-            Send-Mail -From $MailFrom -To $MailTo -SmtpServer $MailServer -MessageBody $Output -Subject 'Purge-Logfiles Report'         
-        }
-        catch {
-            $logger.Write(('Error sending email to {0}' -f $MailTo),3)
+    Begin {
+        Write-Verbose "$(Get-Date): Function Set-CellColor begins"
+        If ($Filter)
+        {   If ($Filter.ToUpper().IndexOf($Property.ToUpper()) -ge 0)
+            {   $Filter = $Filter.ToUpper().Replace($Property.ToUpper(),"`$Value")
+                Try {
+                    [scriptblock]$Filter = [scriptblock]::Create($Filter)
+                }
+                Catch {
+                    Write-Warning "$(Get-Date): ""$Filter"" caused an error, stopping script!"
+                    Write-Warning $Error[0]
+                    Exit
+                }
+            }
+            Else
+            {   Write-Warning "Could not locate $Property in the Filter, which is required.  Filter: $Filter"
+                Exit
+            }
         }
     }
-
-    $logger.Write('Script finished')
-
-    Return $ERR_OK
+    
+    Process {
+        $InputObject = $InputObject -split "`r`n"
+        ForEach ($Line in $InputObject)
+        {   If ($Line.IndexOf("<tr><th") -ge 0)
+            {   Write-Verbose "$(Get-Date): Processing headers..."
+                $Search = $Line | Select-String -Pattern '<th ?[a-z\-:;"=]*>(.*?)<\/th>' -AllMatches
+                $Index = 0
+                ForEach ($Match in $Search.Matches)
+                {   If ($Match.Groups[1].Value -eq $Property)
+                    {   Break
+                    }
+                    $Index ++
+                }
+                If ($Index -eq $Search.Matches.Count)
+                {   Write-Warning "$(Get-Date): Unable to locate property: $Property in table header"
+                    Exit
+                }
+                Write-Verbose "$(Get-Date): $Property column found at index: $Index"
+            }
+            If ($Line -match "<tr( style=""background-color:.+?"")?><td")
+            {   $Search = $Line | Select-String -Pattern '<td ?[a-z\-:;"=]*>(.*?)<\/td>' -AllMatches
+                $Value = $Search.Matches[$Index].Groups[1].Value -as [double]
+                If (-not $Value)
+                {   $Value = $Search.Matches[$Index].Groups[1].Value
+                }
+                If (Invoke-Command $Filter)
+                {   If ($Row)
+                    {   Write-Verbose "$(Get-Date): Criteria met!  Changing row to $Color..."
+                        If ($Line -match "<tr style=""background-color:(.+?)"">")
+                        {   $Line = $Line -replace "<tr style=""background-color:$($Matches[1])","<tr style=""background-color:$Color"
+                        }
+                        Else
+                        {   $Line = $Line.Replace("<tr>","<tr style=""background-color:$Color"">")
+                        }
+                    }
+                    Else
+                    {   Write-Verbose "$(Get-Date): Criteria met!  Changing cell to $Color..."
+                        $Line = $Line.Replace($Search.Matches[$Index].Value,"<td style=""background-color:$Color"">$Value</td>")
+                    }
+                }
+            }
+            Write-Output $Line
+        }
+    }
+    
+    End {
+        Write-Verbose "$(Get-Date): Function Set-CellColor completed"
+    }
 }
-else {
-    # Ooops, the admin did it again.
-    Write-Output 'The script need to be executed in elevated mode. Start the Exchange Management Shell with administrative privileges.'
 
-    Return $ERR_NONELEVATEDMODE
+#...................................
+# Script
+#...................................
+
+#Add dependencies
+Import-Module ActiveDirectory -ErrorAction STOP
+
+
+#Get the mailbox list
+
+Write-Host -ForegroundColor White "Collecting mailbox list"
+
+if($all) { $mailboxes = @(Get-Mailbox -resultsize unlimited -IgnoreDefaultScope) }
+
+if($server)
+{
+    $databases = @(Get-MailboxDatabase -Server $server)
+    $mailboxes = @($databases | Get-Mailbox -resultsize unlimited -IgnoreDefaultScope)
+}
+
+if($database){ $mailboxes = @(Get-Mailbox -database $database -resultsize unlimited -IgnoreDefaultScope) }
+
+if($file) {	$mailboxes = @(Get-Content $file | Get-Mailbox -resultsize unlimited) }
+
+if($mailbox) { $mailboxes = @(Get-Mailbox $mailbox) }
+
+#Get the report
+
+Write-Host -ForegroundColor White "Collecting report data"
+
+$mailboxcount = $mailboxes.count
+$i = 0
+
+$mailboxdatabases = @(Get-MailboxDatabase)
+
+#Loop through mailbox list and collect the mailbox statistics
+foreach ($mb in $mailboxes)
+{
+	$i = $i + 1
+	$pct = $i/$mailboxcount * 100
+	Write-Progress -Activity "Collecting mailbox details" -Status "Processing mailbox $i of $mailboxcount - $mb" -PercentComplete $pct
+
+	$stats = $mb | Get-MailboxStatistics | Select-Object TotalItemSize,TotalDeletedItemSize,ItemCount,LastLogonTime,LastLoggedOnUserAccount
+    
+    if ($mb.ArchiveDatabase)
+    {
+        $archivestats = $mb | Get-MailboxStatistics -Archive | Select-Object TotalItemSize,TotalDeletedItemSize,ItemCount
+    }
+    else
+    {
+        $archivestats = "n/a"
+    }
+
+    $inboxstats = Get-MailboxFolderStatistics $mb -FolderScope Inbox | Where {$_.FolderPath -eq "/Boîte de réception"}
+    $sentitemsstats = Get-MailboxFolderStatistics $mb -FolderScope SentItems | Where {$_.FolderPath -eq "/Éléments envoyés"}
+    $deleteditemsstats = Get-MailboxFolderStatistics $mb -FolderScope DeletedItems | Where {$_.FolderPath -eq "/Éléments supprimés"}
+
+
+	$lastlogon = $stats.LastLogonTime
+
+	$user = Get-User $mb
+	$aduser = Get-ADUser $mb.samaccountname -Properties Enabled,AccountExpirationDate
+    
+    $primarydb = $mailboxdatabases | where {$_.Name -eq $mb.Database.Name}
+    $archivedb = $mailboxdatabases | where {$_.Name -eq $mb.ArchiveDatabase.Name}
+
+	#Create a custom PS object to aggregate the data we're interested in
+	
+	$userObj = New-Object PSObject
+	$userObj | Add-Member NoteProperty -Name "DisplayName" -Value $mb.DisplayName
+	$userObj | Add-Member NoteProperty -Name "Mailbox Type" -Value $mb.RecipientTypeDetails
+	# $userObj | Add-Member NoteProperty -Name "Title" -Value $user.Title
+    # $userObj | Add-Member NoteProperty -Name "Department" -Value $user.Department
+    # $userObj | Add-Member NoteProperty -Name "Office" -Value $user.Office
+
+    # $userObj | Add-Member NoteProperty -Name "TotalMailboxSize" -Value ($stats.TotalItemSize.Value.ToMB() + $stats.TotalDeletedItemSize.Value.ToMB())
+	$userObj | Add-Member NoteProperty -Name "MailboxSize" -Value $stats.TotalItemSize.Value.ToMB()
+	# $userObj | Add-Member NoteProperty -Name "Mailbox Recoverable Item Size (Mb)" -Value $stats.TotalDeletedItemSize.Value.ToMB()
+	$userObj | Add-Member NoteProperty -Name "Mailbox Items" -Value $stats.ItemCount
+
+    $userObj | Add-Member NoteProperty -Name "Inbox Size" -Value $inboxstats.FolderandSubFolderSize.ToMB()
+    $userObj | Add-Member NoteProperty -Name "Sent Folder Size" -Value $sentitemsstats.FolderandSubFolderSize.ToMB()
+    $userObj | Add-Member NoteProperty -Name "Deleted Items Size" -Value $deleteditemsstats.FolderandSubFolderSize.ToMB()
+
+    # if ($archivestats -eq "n/a")
+    # {
+        # $userObj | Add-Member NoteProperty -Name "Total Archive Size (Mb)" -Value "n/a"
+	    # $userObj | Add-Member NoteProperty -Name "Archive Size (Mb)" -Value "n/a"
+	    # $userObj | Add-Member NoteProperty -Name "Archive Deleted Item Size (Mb)" -Value "n/a"
+	    # $userObj | Add-Member NoteProperty -Name "Archive Items" -Value "n/a"
+    # }
+    # else
+    # {
+        # $userObj | Add-Member NoteProperty -Name "Total Archive Size (Mb)" -Value ($archivestats.TotalItemSize.Value.ToMB() + $archivestats.TotalDeletedItemSize.Value.ToMB())
+	    # $userObj | Add-Member NoteProperty -Name "Archive Size (Mb)" -Value $archivestats.TotalItemSize.Value.ToMB()
+	    # $userObj | Add-Member NoteProperty -Name "Archive Deleted Item Size (Mb)" -Value $archivestats.TotalDeletedItemSize.Value.ToMB()
+	    # $userObj | Add-Member NoteProperty -Name "Archive Items" -Value $archivestats.ItemCount
+    # }
+
+    # $userObj | Add-Member NoteProperty -Name "Audit Enabled" -Value $mb.AuditEnabled
+    # $userObj | Add-Member NoteProperty -Name "Email Address Policy Enabled" -Value $mb.EmailAddressPolicyEnabled
+    # $userObj | Add-Member NoteProperty -Name "Hidden From Address Lists" -Value $mb.HiddenFromAddressListsEnabled
+    # $userObj | Add-Member NoteProperty -Name "Use Database Quota Defaults" -Value $mb.UseDatabaseQuotaDefaults
+    
+    if ($mb.UseDatabaseQuotaDefaults -eq $true)
+    {
+        $userObj | Add-Member NoteProperty -Name "IssueWarningQuota" -Value $primarydb.IssueWarningQuota.Value.ToMB()	
+        $userObj | Add-Member NoteProperty -Name "ProhibitSendQuota" -Value $primarydb.ProhibitSendQuota.Value.ToMB()	
+        $userObj | Add-Member NoteProperty -Name "ProhibitSendReceiveQuota" -Value $primarydb.ProhibitSendReceiveQuota.Value.ToMB()	
+    }
+    elseif ($mb.UseDatabaseQuotaDefaults -eq $false)
+    {    
+        $userObj | Add-Member NoteProperty -Name "IssueWarningQuota" -Value $mb.IssueWarningQuota.Value.ToMB()	
+        $userObj | Add-Member NoteProperty -Name "ProhibitSendQuota" -Value $mb.ProhibitSendQuota.Value.ToMB()	
+        $userObj | Add-Member NoteProperty -Name "ProhibitSendReceiveQuota" -Value $mb.ProhibitSendReceiveQuota.Value.ToMB()	
+    }
+
+
+    if( $userObj.MailboxSize -lt $userObj.IssueWarningQuota)
+    {
+        $userObj | Add-Member NoteProperty -Name "Statut" -Value "0"
+    }
+    elseif ($userObj.MailboxSize -gt $userObj.IssueWarningQuota -AND $userObj.MailboxSize -lt $userObj.ProhibitSendQuota )
+    {
+        $userObj | Add-Member NoteProperty -Name "Statut" -Value "1"
+    }
+    elseif ($userObj.MailboxSize -gt $userObj.ProhibitSendQuota -AND $userObj.MailboxSize -lt $userObj.ProhibitSendReceiveQuota )
+    {
+        $userObj | Add-Member NoteProperty -Name "Statut" -Value "2"
+    }
+        elseif ($userObj.MailboxSize -gt $userObj.ProhibitSendReceiveQuota)
+    {
+        $userObj | Add-Member NoteProperty -Name "Statut" -Value "3"
+    }
+
+	# $userObj | Add-Member NoteProperty -Name "Account Enabled" -Value $aduser.Enabled
+	# $userObj | Add-Member NoteProperty -Name "Account Expires" -Value $aduser.AccountExpirationDate
+	 $userObj | Add-Member NoteProperty -Name "Last Mailbox Logon" -Value $lastlogon
+	# $userObj | Add-Member NoteProperty -Name "Last Logon By" -Value $stats.LastLoggedOnUserAccount
+    
+
+	$userObj | Add-Member NoteProperty -Name "Primary Mailbox Database" -Value $mb.Database
+	# $userObj | Add-Member NoteProperty -Name "Primary Server/DAG" -Value $primarydb.MasterServerOrAvailabilityGroup
+
+	# $userObj | Add-Member NoteProperty -Name "Archive Mailbox Database" -Value $mb.ArchiveDatabase
+	# $userObj | Add-Member NoteProperty -Name "Archive Server/DAG" -Value $archivedb.MasterServerOrAvailabilityGroup
+
+    # $userObj | Add-Member NoteProperty -Name "Primary Email Address" -Value $mb.PrimarySMTPAddress
+    # $userObj | Add-Member NoteProperty -Name "Organizational Unit" -Value $user.OrganizationalUnit
+
+	
+	#Add the object to the report
+	$report = $report += $userObj
+}
+
+#Catch zero item results
+$reportcount = $report.count
+
+if ($reportcount -eq 0)
+{
+	Write-Host -ForegroundColor Yellow "No mailboxes were found matching that criteria."
+}
+else
+{
+	#Output single mailbox report to console, otherwise only output to email with -SendEmail parameter
+	 if ($mailbox) 
+	 {
+		 $report | Sort "MailboxSize" -Desc | Format-Table
+	 }
+}
+
+
+if ($SendEmail)
+{
+
+    $topmailboxeshtml = $report | Sort "MailboxSize" -Desc  | ConvertTo-Html -Fragment | set-cellcolor Statut yellow -Filter "Statut -eq 1"
+    $topmailboxeshtml = $topmailboxeshtml | set-cellcolor Statut orange -Filter "Statut -eq 2"
+    $topmailboxeshtml = $topmailboxeshtml | set-cellcolor Statut red -Filter "Statut -eq 3"
+
+
+
+	$htmlhead="<html>
+				<style>
+				BODY{font-family: Arial; font-size: 8pt;}
+				H1{font-size: 22px; font-family: 'Segoe UI Light','Segoe UI','Lucida Grande',Verdana,Arial,Helvetica,sans-serif;}
+				H2{font-size: 18px; font-family: 'Segoe UI Light','Segoe UI','Lucida Grande',Verdana,Arial,Helvetica,sans-serif;}
+				H3{font-size: 16px; font-family: 'Segoe UI Light','Segoe UI','Lucida Grande',Verdana,Arial,Helvetica,sans-serif;}
+				TABLE{border: 1px solid black; border-collapse: collapse; font-size: 8pt;}
+				TH{border: 1px solid #969595; background: #dddddd; padding: 5px; color: #000000;}
+				TD{border: 1px solid #969595; padding: 5px; }
+				</style>
+				<body>
+                <h1 align=""center"">Exchange Server Mailbox Report</h1>
+                <h3 align=""center"">Generated: $now</h3>
+                <p>Key : <span style='background-color: #ffff00;'>IssueWarningQuota</span> <span style='background-color: #ff9900;'>ProhibitSendQuota</span>&nbsp;<span style='background-color: #ff0000;'>ProhibitSendReceiveQuota</span> </p>
+                <p>Report of Exchange mailboxes.</p>"    
+
+    $spacer = "<br />"
+
+	$htmltail = "</body></html>"
+
+	$htmlreport = $htmlhead + $topmailboxeshtml + $htmltail
+
+	try
+    {
+        Write-Host "Sending email report..."
+        Send-MailMessage @smtpsettings -Body $htmlreport -BodyAsHtml -Encoding ([System.Text.Encoding]::UTF8) -ErrorAction STOP
+        Write-Host "Finished."
+    }
+    catch
+    {
+        Write-Warning "An SMTP error has occurred, refer to log file for more details."
+        $_.Exception.Message | Out-File "$myDir\get-mailboxreport-error.log"
+        EXIT
+    }
 }
